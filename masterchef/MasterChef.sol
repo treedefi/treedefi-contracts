@@ -46,14 +46,14 @@ contract MasterChef is Ownable {
     }
 
     // The TREE TOKEN!
-    TreeToken public tree;
+    TreeToken public immutable tree;
     // Dev address.
     address public devaddr;
     // TREE tokens created per block.
     uint256 public treePerBlock;
-    uint256 public startTime;
+    uint256 public immutable startTime;
     // Bonus muliplier for early tree makers.
-    uint256 public constant BONUS_MULTIPLIER = 1;
+    
     // Deposit Fee addresses
     address public feeDonationAddress;
     address public feeBuybackAddress;
@@ -63,15 +63,41 @@ contract MasterChef is Ownable {
     PoolInfo[] public poolInfo;
     // Info of each user that stakes LP tokens.
     mapping (uint256 => mapping (address => UserInfo)) public userInfo;
+
+    mapping (uint256 => uint256) internal lpTokenAmount;
+
     // Total allocation points. Must be the sum of all allocation points in all pools.
     uint256 public totalAllocPoint = 0;
     // The block number when TREE mining starts.
-    uint256 public startBlock;
+    uint256 public immutable startBlock;
     uint16 public harvestFee = 5;
+    uint256 constant weekInSeconds = 604800; 
+    bool internal locked;
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event SetDev(address indexed user, address newDevAddress);
+    event SetFeeDonationAddress(address indexed user, address newFeeDonationAddress);
+    event SetFeeBuybackAddress(address indexed user, address newFeeBuybackAddress);
+    event SetFeeDevAddress(address indexed user, address newFeeDevAddress);
+    event UpdateEmissionRate(address indexed user, uint256 oldEmissionRate, uint256 newEmissionRate);
+    event SetHarvestFee(address indexed user, uint256 oldHarvestFee, uint256 newHarvestFee);
+
+    modifier validatePoolByPid(uint256 _pid) {
+        require(
+            _pid < poolLength(),
+            'MasterChef: Pool Doesnot exist'
+        );
+        _;
+    }
+
+    modifier noReentrant() {
+        require(!locked, "No re-entrancy");
+        locked = true;
+        _;
+        locked = false;
+    }
 
     constructor(
         TreeToken _tree,
@@ -88,13 +114,21 @@ contract MasterChef is Ownable {
         startTime = now;
     }
 
-    function poolLength() external view returns (uint256) {
+    function poolLength() public view returns (uint256) {
         return poolInfo.length;
     }
 
     // Add a new lp to the pool. Can only be called by the owner.
-    // XXX DO NOT add the same LP token more than once. Rewards will be messed up if you do.
-    function add(uint256 _allocPoint, IBEP20 _lpToken, uint16 _depositFeeBP, bool _withUpdate) public onlyOwner {
+    // Onwer can add multiple pool with LP token.
+    function add(
+        uint256 _allocPoint, 
+        IBEP20 _lpToken, 
+        uint16 _depositFeeBP, 
+        bool _withUpdate
+    ) 
+        external
+        onlyOwner
+    {
         require(_depositFeeBP <= 10000, "add: invalid deposit fee basis points");
         if (_withUpdate) {
             massUpdatePools();
@@ -111,7 +145,16 @@ contract MasterChef is Ownable {
     }
 
     // Update the given pool's TREE allocation point and deposit fee. Can only be called by the owner.
-    function set(uint256 _pid, uint256 _allocPoint, uint16 _depositFeeBP, bool _withUpdate) public onlyOwner {
+    function set(
+        uint256 _pid, 
+        uint256 _allocPoint, 
+        uint16 _depositFeeBP, 
+        bool _withUpdate
+    ) 
+        external
+        onlyOwner
+        validatePoolByPid(_pid)
+    {
         require(_depositFeeBP <= 10000, "set: invalid deposit fee basis points");
         if (_withUpdate) {
             massUpdatePools();
@@ -122,26 +165,40 @@ contract MasterChef is Ownable {
     }
 
     // Return reward multiplier over the given _from to _to block.
-    function getMultiplier(uint256 _from, uint256 _to) public view returns (uint256) {
-        return _to.sub(_from).mul(BONUS_MULTIPLIER);
+    function getMultiplier(
+        uint256 _from, 
+        uint256 _to
+    ) 
+        public pure 
+        returns (uint256)
+    {
+        return _to.sub(_from);
+        // return _to.sub(_from).mul(BONUS_MULTIPLIER);
     }
 
     // View function to see pending TREEs on frontend.
-    function pendingTree(uint256 _pid, address _user) external view returns (uint256) {
+    function pendingTree(
+        uint256 _pid, 
+        address _user
+    ) 
+        external view 
+        validatePoolByPid(_pid) 
+        returns (uint256) 
+    {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
         uint256 accTreePerShare = pool.accTreePerShare;
-        uint256 lpSupply = pool.lpToken.balanceOf(address(this));
+        uint256 lpSupply = lpTokenAmount[_pid];
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
 
             uint16 i;
             uint256 calcblocks = treePerBlock;
             uint256 duration = now - startTime;
-            uint256 mulNum = duration.div(604800);
+            uint256 mulNum = duration.div(weekInSeconds);
             
             for (i = 1; i < mulNum; i++) {
-                calcblocks = calcblocks.div(100).mul(98);
+                calcblocks = calcblocks.mul(98).div(100);
             }
             
             uint256 treeReward = multiplier.mul(calcblocks).mul(pool.allocPoint).div(totalAllocPoint);
@@ -152,20 +209,27 @@ contract MasterChef is Ownable {
     }
 
     // Update reward variables for all pools. Be careful of gas spending!
-    function massUpdatePools() public {
-        uint256 length = poolInfo.length;
+    function massUpdatePools() 
+        public 
+    {
+        uint256 length = poolLength();
         for (uint256 pid = 0; pid < length; ++pid) {
             updatePool(pid);
         }
     }
 
     // Update reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _pid) public {
+    function updatePool(
+        uint256 _pid
+    ) 
+        public 
+        validatePoolByPid(_pid)
+    {
         PoolInfo storage pool = poolInfo[_pid];
         if (block.number <= pool.lastRewardBlock) {
             return;
         }
-        uint256 lpSupply = pool.lpToken.balanceOf(address(this));
+        uint256 lpSupply = lpTokenAmount[_pid];
         if (lpSupply == 0 || pool.allocPoint == 0) {
             pool.lastRewardBlock = block.number;
             return;
@@ -175,20 +239,20 @@ contract MasterChef is Ownable {
         uint16 i;
         uint256 calcblocks = treePerBlock;
         uint256 duration = now - startTime;
-        uint256 mulNum = duration.div(604800);
+        uint256 mulNum = duration.div(weekInSeconds);
         
         for (i = 1; i < mulNum; i++) {
-            calcblocks = calcblocks.div(100).mul(98);
+            calcblocks = calcblocks.mul(98).div(100);
         }
         
         uint256 treeReward = multiplier.mul(calcblocks).mul(pool.allocPoint).div(totalAllocPoint);
 
         if(_pid == 3) {
             tree.mint(devaddr, treeReward);
-            tree.burn(treeReward.div(100).mul(harvestFee));
+            tree.burn(treeReward.mul(harvestFee).div(100));
         } else {
             tree.mint(devaddr, treeReward.div(20));
-            tree.mint(address(this), treeReward.div(100).mul(95));
+            tree.mint(address(this), treeReward.mul(95).div(100));
         }
 
         pool.accTreePerShare = pool.accTreePerShare.add(treeReward.mul(1e12).div(lpSupply));
@@ -196,7 +260,14 @@ contract MasterChef is Ownable {
     }
 
     // Deposit LP tokens to MasterChef for TREE allocation.
-    function deposit(uint256 _pid, uint256 _amount) public {
+    function deposit(
+        uint256 _pid, 
+        uint256 _amount
+    ) 
+        external 
+        noReentrant 
+        validatePoolByPid(_pid)
+    {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         updatePool(_pid);
@@ -210,20 +281,28 @@ contract MasterChef is Ownable {
             pool.lpToken.safeTransferFrom(address(msg.sender), address(this), _amount);
             if(pool.depositFeeBP > 0){
                 uint256 depositFee = _amount.mul(pool.depositFeeBP).div(10000);
-                pool.lpToken.safeTransfer(feeDonationAddress, depositFee.div(3));
-                pool.lpToken.safeTransfer(feeBuybackAddress, depositFee.div(3));
-                pool.lpToken.safeTransfer(feeDevAddress, depositFee.div(3));
+                uint256 depositFee13 = depositFee.div(3);
+                pool.lpToken.safeTransfer(feeDonationAddress, depositFee13);
+                pool.lpToken.safeTransfer(feeBuybackAddress, depositFee13);
+                pool.lpToken.safeTransfer(feeDevAddress, depositFee.sub(depositFee13).sub(depositFee13));
                 user.amount = user.amount.add(_amount).sub(depositFee);
             }else{
                 user.amount = user.amount.add(_amount);
             }
+            lpTokenAmount[_pid] += user.amount;
         }
         user.rewardDebt = user.amount.mul(pool.accTreePerShare).div(1e12);
         emit Deposit(msg.sender, _pid, _amount);
     }
 
     // Withdraw LP tokens from MasterChef.
-    function withdraw(uint256 _pid, uint256 _amount) public {
+    function withdraw(
+        uint256 _pid, 
+        uint256 _amount
+    ) 
+        external
+        validatePoolByPid(_pid)
+    {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
@@ -235,77 +314,139 @@ contract MasterChef is Ownable {
         if(_amount > 0) {
             user.amount = user.amount.sub(_amount);
             pool.lpToken.safeTransfer(address(msg.sender), _amount);
+            lpTokenAmount[_pid] -= _amount;
         }
         user.rewardDebt = user.amount.mul(pool.accTreePerShare).div(1e12);
         emit Withdraw(msg.sender, _pid, _amount);
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
-    function emergencyWithdraw(uint256 _pid) public {
+    function emergencyWithdraw(
+        uint256 _pid
+    ) 
+        external
+        validatePoolByPid(_pid)
+    {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         uint256 amount = user.amount;
         user.amount = 0;
         user.rewardDebt = 0;
         pool.lpToken.safeTransfer(address(msg.sender), amount);
+        lpTokenAmount[_pid] -= amount;
         emit EmergencyWithdraw(msg.sender, _pid, amount);
     }
 
     // Safe tree transfer function, just in case if rounding error causes pool to not have enough TREEs.
-    function safeTreeTransfer(address _to, uint256 _amount) internal {
+    function safeTreeTransfer(
+        address _to,
+        uint256 _amount
+    ) 
+        internal 
+    {
         uint256 treeBal = tree.balanceOf(address(this));
+        bool transferSuccess = false;
         if (_amount > treeBal) {
-            tree.transfer(_to, treeBal);
+            transferSuccess = tree.transfer(_to, treeBal);
         } else {
-            tree.transfer(_to, _amount);
+            transferSuccess = tree.transfer(_to, _amount);
         }
+
+        require(
+            transferSuccess == true,
+            'safeTreeTransfer: transfer failed'
+        );
     }
 
     // Update dev address by the previous dev.
-    function dev(address _devaddr) public {
+    function dev(
+        address _devaddr
+    ) 
+        external 
+    {
         require(msg.sender == devaddr, "dev: wut?");
+
+        emit SetDev(devaddr, _devaddr);
         devaddr = _devaddr;
     }
 
-    function setFeeDonationAddress(address _feeAddress) public{
+    function setFeeDonationAddress(
+        address _feeAddress
+    ) 
+        external 
+    {
         require(msg.sender == feeDonationAddress, "setFeeAddress: FORBIDDEN");
+
+        emit SetFeeDonationAddress(feeDonationAddress, _feeAddress);
         feeDonationAddress = _feeAddress;
     }
 
-    function setFeeBuybackAddress(address _feeAddress) public{
+    function setFeeBuybackAddress(
+        address _feeAddress
+    ) 
+        external
+    {
         require(msg.sender == feeBuybackAddress, "setFeeAddress: FORBIDDEN");
+
+        emit SetFeeBuybackAddress(feeBuybackAddress, _feeAddress);
         feeBuybackAddress = _feeAddress;
     }
 
-    function setFeeDevAddress(address _feeAddress) public{
+    function setFeeDevAddress(
+        address _feeAddress
+    ) 
+        external
+    {
         require(msg.sender == feeDevAddress, "setFeeAddress: FORBIDDEN");
+
+        emit SetFeeDevAddress(feeDevAddress, _feeAddress);
         feeDevAddress = _feeAddress;
     }
 
     //Pancake has to add hidden dummy pools inorder to alter the emission, here we make it simple and transparent to all.
-    function updateEmissionRate(uint256 _treePerBlock) public onlyOwner {
+    function updateEmissionRate(
+        uint256 _treePerBlock
+    ) 
+        external
+        onlyOwner
+    {
         massUpdatePools();
+
+        emit UpdateEmissionRate(msg.sender, treePerBlock, _treePerBlock);
         treePerBlock = _treePerBlock;
     }
  
-    function setHarvestFee(uint16 _harvestFee) public onlyOwner {
+    function setHarvestFee(
+        uint16 _harvestFee
+    ) 
+        external
+        onlyOwner 
+    {
         require(_harvestFee < 95, "set: invalid harvest fee basis points");
         require(block.number > startBlock, "not started");
+
+        emit SetHarvestFee(msg.sender, harvestFee, _harvestFee);
         harvestFee = _harvestFee;
     }
 
-    function getHarvestFee() public view returns (uint16) {
+    function getHarvestFee() 
+        public view 
+        returns (uint16) 
+    {
         return harvestFee;
     }
 
-    function getCurrentPerBlock() public view returns (uint256) {
+    function getCurrentPerBlock() 
+        public view 
+        returns (uint256)
+    {
         uint16 i;
         uint256 calcblocks = treePerBlock;
         uint256 duration = now - startTime;
-        uint256 mulNum = duration.div(604800);
+        uint256 mulNum = duration.div(weekInSeconds);
         
         for (i = 1; i < mulNum; i++) {
-            calcblocks = calcblocks.div(100).mul(98);
+            calcblocks = calcblocks.mul(98).div(100);
         }
         
         return calcblocks;
