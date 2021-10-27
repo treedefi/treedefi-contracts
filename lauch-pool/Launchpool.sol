@@ -1,5 +1,5 @@
 /**
- *Submitted for verification at BscScan.com on 2021-06-11
+ *Submitted for verification at BscScan.com on 2021-10-25
 */
 
 //
@@ -40,7 +40,6 @@
 //     \___________________________/
 //
 // SPDX-License-Identifier: MIT
-
 
 // File: @pancakeswap/pancake-swap-lib/contracts/math/SafeMath.sol
 
@@ -723,14 +722,14 @@ contract TokenRecover is Ownable {
     }
 }
 
-// File: contracts/SmartChef.sol
+// File: contracts/TreePool.sol
 
 pragma solidity 0.6.12;
 
 
 
 
-contract SeedChef is TokenRecover {
+contract TreePool is TokenRecover {
     using SafeMath for uint256;
     using SafeBEP20 for IBEP20;
 
@@ -934,5 +933,30 @@ contract SeedChef is TokenRecover {
         require(_amount < rewardToken.balanceOf(address(this)), 'not enough token');
         rewardToken.safeTransfer(address(msg.sender), _amount);
     }
-
+    
+    // Add a function to update rewardPerBlock. Can only be called by the owner.
+    function updateRewardPerBlock(uint256 _rewardPerBlock) public onlyOwner {
+        rewardPerBlock = _rewardPerBlock;
+        //Automatically updatePool 0
+        updatePool(0);        
+    }
+    
+     // Add a function to update lastRewardBlock. Can only be called by the owner.
+    function updateLastRewardBlock(uint256 _bonusEndBlock) public onlyOwner {
+        poolInfo[0].lastRewardBlock = _bonusEndBlock;
+    }
+    
+    // Add a function to update bonusEndBlock. Can only be called by the owner.
+    function updateRewardEndBlock(uint256 _bonusEndBlock) public onlyOwner {
+        bonusEndBlock = _bonusEndBlock;
+    }
+    
+    // Add a function to update startBlock. Can only be called by the owner.
+    function updateStartBlock(uint256 _startBlock) public onlyOwner {
+        //Can only be updated if the original startBlock is not minted
+        require(block.number <= poolInfo[0].lastRewardBlock, "updateStartBlock: startblock already minted");
+        poolInfo[0].lastRewardBlock = _startBlock;
+        startBlock = _startBlock;
+    } 
+    
 }
