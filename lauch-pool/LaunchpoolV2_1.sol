@@ -888,9 +888,10 @@ contract TreePool is TokenRecover {
         if(_amount > 0) {
             pool.lpToken.safeTransferFrom(address(msg.sender), address(this), _amount);
             user.amount = user.amount.add(_amount);
+            user.stakedOn = block.timestamp;
         }
+        
         user.rewardDebt = user.amount.mul(pool.accCakePerShare).div(1e12);
-        user.stakedOn = block.timestamp;
 
         emit Deposit(msg.sender, _amount);
     }
